@@ -4,7 +4,7 @@ use std::{
     mem::MaybeUninit,
 };
 
-use private::ErasedForce;
+use private::{ErasedForce, Opaque};
 
 use crate::{backend::Backend, helpers::DynCompare, system::System};
 
@@ -54,8 +54,12 @@ impl ForceContainer {
                 // SAFETY:
                 // The output pointer is valid and matches the expected B::Vector type.
                 // Pointer is aligned
+                //
+                // We use a c_style opaque type (a wrapper around an empty bytearray) to model
+                // void*
+                // c_void would also probably do, but I am not sure
                 unsafe {
-                    f.compute_force_into(system, result.as_mut_ptr() as *mut ());
+                    f.compute_force_into(system, result.as_mut_ptr() as *mut Opaque);
                     result.assume_init() // ensure no leak
                 }
             })
@@ -78,7 +82,7 @@ where
         Box::new(ForceImpl::force(&self.0, system, ()))
     }
 
-    unsafe fn compute_force_into(&self, system: &System, output: *mut ()) {
+    unsafe fn compute_force_into(&self, system: &System, output: *mut Opaque) {
         let vector = self.0.force(system, ());
         let output = output as *mut B::Vector;
         *output = vector;
@@ -88,7 +92,7 @@ where
         Box::new(ForceImpl::energy(&self.0, system, ()))
     }
 
-    unsafe fn compute_energy_into(&self, system: &System, output: *mut ()) {
+    unsafe fn compute_energy_into(&self, system: &System, output: *mut Opaque) {
         let vector = self.0.energy(system, ());
         let output = output as *mut B::Vector;
         *output = vector;
@@ -110,17 +114,23 @@ mod private {
         system::System,
     };
 
+    #[repr(C)]
+    pub struct Opaque {
+        _data: [u8; 0],
+        _marker: core::marker::PhantomData<(*mut u8, core::marker::PhantomPinned)>,
+    }
+
     pub(crate) trait ErasedForce:
         std::fmt::Debug + DynCompare + BoxCloneErasedForce
     {
         /// Compute force for the backend this force is implemented for
         fn compute_force(&self, system: &System) -> Box<dyn Any>;
         /// Write result of calling compute_force into a pre-allocated memory
-        unsafe fn compute_force_into(&self, system: &System, output: *mut ());
+        unsafe fn compute_force_into(&self, system: &System, output: *mut Opaque);
         /// Compute energy for the backend this force is implemented for
         fn compute_energy(&self, system: &System) -> Box<dyn Any>;
         /// Write result of calling compute_energy into a pre-allocated memory
-        unsafe fn compute_energy_into(&self, system: &System, output: *mut ());
+        unsafe fn compute_energy_into(&self, system: &System, output: *mut Opaque);
         /// Return the TypeId of the backend this force targets
         fn backend_id(&self) -> TypeId;
     }
