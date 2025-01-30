@@ -8,14 +8,6 @@ use private::{ErasedForce, Opaque};
 
 use crate::{backend::Backend, helpers::DynCompare, system::System};
 
-// TODO: Can we avoid second indirection here?
-// To compute force we need to:
-// 1. get some dyn ErasedForce from inner
-// 2. backend_id/compute_force via vtable to get to the concrete forceimpl
-// 3. Call ForceImpl returning boxed dyn Any and downcast.. <- allocation here
-// Prolly we avoid dynamic dispatch when going to compute_force, since only ErasedForceWrapper<F, B>'s
-// implement it.. or not since size must be known at this point, and F can be of any size
-// Also, maybe we can return a function pointer instead not to allocate for a result
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ForceContainer {
     inner: Vec<Box<dyn ErasedForce>>,
@@ -55,8 +47,7 @@ impl ForceContainer {
                 // The output pointer is valid and matches the expected B::Vector type.
                 // Pointer is aligned
                 //
-                // We use a c_style opaque type (a wrapper around an empty bytearray) to model
-                // void*
+                // We use a c_style opaque type (wrapper around an empty array) to model void*
                 // c_void would also probably do, but I am not sure
                 unsafe {
                     f.compute_force_into(system, result.as_mut_ptr() as *mut Opaque);
@@ -126,10 +117,24 @@ mod private {
         /// Compute force for the backend this force is implemented for
         fn compute_force(&self, system: &System) -> Box<dyn Any>;
         /// Write result of calling compute_force into a pre-allocated memory
+        ///
+        /// Safety:
+        /// 1. Pointer must be aligned and not-null
+        /// 2. Caller must ensure that besides invariants required by MaybeUninit, pointer matches
+        ///    the expected output B::Vector type
+        /// 3. Memory at `output` must be initialized after returning
+        /// 4. Caller must ensure that the data at `output` will get dropped
         unsafe fn compute_force_into(&self, system: &System, output: *mut Opaque);
         /// Compute energy for the backend this force is implemented for
         fn compute_energy(&self, system: &System) -> Box<dyn Any>;
         /// Write result of calling compute_energy into a pre-allocated memory
+        ///
+        /// Safety:
+        /// 1. Pointer must be aligned and not-null
+        /// 2. Caller must ensure that besides invariants required by MaybeUninit, pointer matches
+        ///    the expected output B::Vector type
+        /// 3. Memory at `output` must be initialized after returning
+        /// 4. Caller must ensure that the data at `output` will get dropped
         unsafe fn compute_energy_into(&self, system: &System, output: *mut Opaque);
         /// Return the TypeId of the backend this force targets
         fn backend_id(&self) -> TypeId;
