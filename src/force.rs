@@ -1,20 +1,30 @@
 use std::{
     any::{Any, TypeId},
     marker::PhantomData,
+    mem::MaybeUninit,
 };
 
-use crate::{
-    backend::Backend,
-    helpers::{
-        macros::{impl_box_clone, impl_ref_dyn_partialeq},
-        DynCompare,
-    },
-    system::System,
-};
+use private::ErasedForce;
 
+use crate::{backend::Backend, helpers::DynCompare, system::System};
+
+// TODO: Can we avoid second indirection here?
+// To compute force we need to:
+// 1. get some dyn ErasedForce from inner
+// 2. backend_id/compute_force via vtable to get to the concrete forceimpl
+// 3. Call ForceImpl returning boxed dyn Any and downcast.. <- allocation here
+// Prolly we avoid dynamic dispatch when going to compute_force, since only ErasedForceWrapper<F, B>'s
+// implement it.. or not since size must be known at this point, and F can be of any size
+// Also, maybe we can return a function pointer instead not to allocate for a result
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ForceContainer {
     inner: Vec<Box<dyn ErasedForce>>,
+}
+
+/// A trait defining the concrete implementation for the Force for a given `Backend`
+pub trait ForceImpl<B: Backend>: std::fmt::Debug + Clone + PartialEq + 'static {
+    fn force(&self, system: &System, params: ()) -> B::Vector;
+    fn energy(&self, system: &System, params: ()) -> B::Vector;
 }
 
 impl ForceContainer {
@@ -39,7 +49,16 @@ impl ForceContainer {
         self.inner
             .iter()
             .find(|f| f.backend_id() == TypeId::of::<B>())
-            .map(|f| *f.compute_force(system).downcast::<B::Vector>().unwrap())
+            .map(|f| {
+                let mut result = MaybeUninit::<B::Vector>::uninit();
+                // SAFETY:
+                // The output pointer is valid and matches the expected B::Vector type.
+                // Pointer is aligned
+                unsafe {
+                    f.compute_force_into(system, result.as_mut_ptr() as *mut ());
+                    result.assume_init() // ensure no leak
+                }
+            })
     }
 
     pub fn clear(&mut self) {
@@ -48,12 +67,9 @@ impl ForceContainer {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct ErasedForceWrapper<F, B>(F, PhantomData<B>)
-where
-    B: Backend + 'static,
-    F: ForceImpl<B> + std::fmt::Debug + Clone + DynCompare + 'static;
+struct ErasedForceWrapper<F, B>(F, PhantomData<B>);
 
-impl<F, B> ErasedForce for ErasedForceWrapper<F, B>
+impl<F, B> private::ErasedForce for ErasedForceWrapper<F, B>
 where
     F: ForceImpl<B> + std::fmt::Debug + Clone + DynCompare + 'static,
     B: Backend + 'static,
@@ -62,8 +78,20 @@ where
         Box::new(ForceImpl::force(&self.0, system, ()))
     }
 
+    unsafe fn compute_force_into(&self, system: &System, output: *mut ()) {
+        let vector = self.0.force(system, ());
+        let output = output as *mut B::Vector;
+        *output = vector;
+    }
+
     fn compute_energy(&self, system: &System) -> Box<dyn Any> {
         Box::new(ForceImpl::energy(&self.0, system, ()))
+    }
+
+    unsafe fn compute_energy_into(&self, system: &System, output: *mut ()) {
+        let vector = self.0.energy(system, ());
+        let output = output as *mut B::Vector;
+        *output = vector;
     }
 
     fn backend_id(&self) -> TypeId {
@@ -71,22 +99,34 @@ where
     }
 }
 
-pub trait ErasedForce: std::fmt::Debug + DynCompare + BoxCloneErasedForce {
-    /// Compute force for the backend this force is implemented for
-    fn compute_force(&self, system: &System) -> Box<dyn Any>;
-    /// Compute energy for the backend this force is implemented for
-    fn compute_energy(&self, system: &System) -> Box<dyn Any>;
-    /// Return the TypeId of the backend this force targets
-    fn backend_id(&self) -> TypeId;
-}
+mod private {
+    use std::any::{Any, TypeId};
 
-impl_box_clone!(ErasedForce, BoxCloneErasedForce, box_clone);
-impl_ref_dyn_partialeq!(ErasedForce);
+    use crate::{
+        helpers::{
+            macros::{impl_box_clone, impl_ref_dyn_partialeq},
+            DynCompare,
+        },
+        system::System,
+    };
 
-/// A trait defining the concrete implementation for the Force for a given `Backend`
-pub trait ForceImpl<B: Backend>: std::fmt::Debug + Clone + PartialEq + 'static {
-    fn force(&self, system: &System, params: ()) -> B::Vector;
-    fn energy(&self, system: &System, params: ()) -> B::Vector;
+    pub(crate) trait ErasedForce:
+        std::fmt::Debug + DynCompare + BoxCloneErasedForce
+    {
+        /// Compute force for the backend this force is implemented for
+        fn compute_force(&self, system: &System) -> Box<dyn Any>;
+        /// Write result of calling compute_force into a pre-allocated memory
+        unsafe fn compute_force_into(&self, system: &System, output: *mut ());
+        /// Compute energy for the backend this force is implemented for
+        fn compute_energy(&self, system: &System) -> Box<dyn Any>;
+        /// Write result of calling compute_energy into a pre-allocated memory
+        unsafe fn compute_energy_into(&self, system: &System, output: *mut ());
+        /// Return the TypeId of the backend this force targets
+        fn backend_id(&self) -> TypeId;
+    }
+
+    impl_box_clone!(ErasedForce, BoxCloneErasedForce, box_clone);
+    impl_ref_dyn_partialeq!(ErasedForce);
 }
 
 #[cfg(test)]
