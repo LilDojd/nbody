@@ -26,7 +26,7 @@ impl DeviceOps for CPUDevice {
 
 impl<V> Backend for CpuBackend<V>
 where
-    V: Default + Sync + Send + std::fmt::Debug + Clone + 'static,
+    V: Default + Sync + Send + std::fmt::Debug + Clone + PartialEq + 'static,
 {
     type Device = CPUDevice;
     type Vector = V;

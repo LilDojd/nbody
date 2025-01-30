@@ -1,4 +1,7 @@
-use std::any::{Any, TypeId};
+use std::{
+    any::{Any, TypeId},
+    marker::PhantomData,
+};
 
 use crate::{
     backend::Backend,
@@ -19,19 +22,24 @@ impl ForceContainer {
         Self::default()
     }
 
-    pub fn add_force<B>(&mut self, force: impl ForceImpl<Backend = B>)
+    pub fn add_force<B>(&mut self, force: impl ForceImpl<B>)
     where
         B: Backend + 'static,
     {
-        self.inner.push(Box::new(force));
+        let wrapped = ErasedForceWrapper(force, PhantomData);
+        self.inner.push(Box::new(wrapped));
     }
 
     // A temporary function to show how we can leverage type system to assemble
     // forces from different backends.
     // One can imagine doing fold and map (reduce) here for a specific `B: Backend`
-    pub fn compute_first_force<B: Backend>(&self, system: &System) -> B::Vector {
-        let f = self.inner.first().unwrap();
-        *f.compute_force(system).downcast::<B::Vector>().unwrap()
+    // Or processing each force and folding it to some unified representation
+    pub fn compute_first_matching_force<B: Backend>(&self, system: &System) -> Option<B::Vector> {
+        // Unwrap last since downcast is guaranteed to suceed
+        self.inner
+            .iter()
+            .find(|f| f.backend_id() == TypeId::of::<B>())
+            .map(|f| *f.compute_force(system).downcast::<B::Vector>().unwrap())
     }
 
     pub fn clear(&mut self) {
@@ -39,20 +47,27 @@ impl ForceContainer {
     }
 }
 
-impl<F> ErasedForce for F
+#[derive(Debug, Clone, PartialEq)]
+struct ErasedForceWrapper<F, B>(F, PhantomData<B>)
 where
-    F: ForceImpl + std::fmt::Debug + Clone + DynCompare + 'static,
+    B: Backend + 'static,
+    F: ForceImpl<B> + std::fmt::Debug + Clone + DynCompare + 'static;
+
+impl<F, B> ErasedForce for ErasedForceWrapper<F, B>
+where
+    F: ForceImpl<B> + std::fmt::Debug + Clone + DynCompare + 'static,
+    B: Backend + 'static,
 {
     fn compute_force(&self, system: &System) -> Box<dyn Any> {
-        Box::new(ForceImpl::force(self, system, ()))
+        Box::new(ForceImpl::force(&self.0, system, ()))
     }
 
     fn compute_energy(&self, system: &System) -> Box<dyn Any> {
-        Box::new(ForceImpl::energy(self, system, ()))
+        Box::new(ForceImpl::energy(&self.0, system, ()))
     }
 
     fn backend_id(&self) -> TypeId {
-        TypeId::of::<F::Backend>()
+        TypeId::of::<B>()
     }
 }
 
@@ -69,10 +84,9 @@ impl_box_clone!(ErasedForce, BoxCloneErasedForce, box_clone);
 impl_ref_dyn_partialeq!(ErasedForce);
 
 /// A trait defining the concrete implementation for the Force for a given `Backend`
-pub trait ForceImpl: std::fmt::Debug + Clone + PartialEq + 'static {
-    type Backend: Backend;
-    fn force(&self, system: &System, params: ()) -> <Self::Backend as Backend>::Vector;
-    fn energy(&self, system: &System, params: ()) -> <Self::Backend as Backend>::Vector;
+pub trait ForceImpl<B: Backend>: std::fmt::Debug + Clone + PartialEq + 'static {
+    fn force(&self, system: &System, params: ()) -> B::Vector;
+    fn energy(&self, system: &System, params: ()) -> B::Vector;
 }
 
 #[cfg(test)]
@@ -83,22 +97,29 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct MyForce;
 
-    impl ForceImpl for MyForce {
-        type Backend = CpuBackend<f64>;
-        fn force(&self, system: &System, params: ()) -> <Self::Backend as Backend>::Vector {
+    impl ForceImpl<CpuBackend<f64>> for MyForce {
+        fn force(&self, system: &System, params: ()) -> f64 {
             1.5
         }
-        fn energy(&self, system: &System, params: ()) -> <Self::Backend as Backend>::Vector {
+        fn energy(&self, system: &System, params: ()) -> f64 {
             1.5
         }
     }
 
-    impl ForceImpl for MySecondForce {
-        type Backend = CpuBackend<i8>;
-        fn force(&self, system: &System, params: ()) -> <Self::Backend as Backend>::Vector {
+    impl ForceImpl<CpuBackend<f32>> for MySecondForce {
+        fn force(&self, system: &System, params: ()) -> f32 {
+            -100.
+        }
+        fn energy(&self, system: &System, params: ()) -> f32 {
+            -100.
+        }
+    }
+
+    impl ForceImpl<CpuBackend<i8>> for MySecondForce {
+        fn force(&self, system: &System, params: ()) -> i8 {
             -1
         }
-        fn energy(&self, system: &System, params: ()) -> <Self::Backend as Backend>::Vector {
+        fn energy(&self, system: &System, params: ()) -> i8 {
             -1
         }
     }
@@ -114,26 +135,41 @@ mod tests {
         let mut forces = ForceContainer::new();
         let system = System::new();
 
+        // We can add first force like this, since only one backend impl is present
         forces.add_force(my_cpu_force);
-        println!(
-            "After first: {}",
-            forces.compute_first_force::<CpuBackend<f64>>(&system)
+        // We then can query this impl and know the returning type
+        assert_eq!(
+            forces.compute_first_matching_force::<CpuBackend<f64>>(&system),
+            Some(1.5f64)
         );
-        forces.add_force(my_second_force.clone());
-        println!(
-            "First after second: {}",
-            forces.compute_first_force::<CpuBackend<f64>>(&system)
+        // Unsuccessful queries will return None
+        assert_eq!(
+            forces.compute_first_matching_force::<CpuBackend<String>>(&system),
+            None
         );
-        forces.clear();
-        forces.add_force(my_second_force);
-        println!(
-            "Second after second: {}",
-            forces.compute_first_force::<CpuBackend<i8>>(&system)
+
+        // Now let's add second force and query for its backend
+        // Note the turbofish here, since we have multiple backends defined for this force
+        // User must chose (or we will later fallback to most optimal backend with some proxy
+        // Dynamic backend)
+        forces.add_force::<CpuBackend<i8>>(my_second_force.clone());
+
+        assert_eq!(
+            forces.compute_first_matching_force::<CpuBackend<i8>>(&system),
+            Some(-1)
         );
-        // Panics here
-        println!(
-            "{}",
-            forces.compute_first_force::<CpuBackend<usize>>(&system)
+
+        // We can add same force with the different backend also
+        assert_eq!(
+            forces.compute_first_matching_force::<CpuBackend<f32>>(&system),
+            None
         );
+        forces.add_force::<CpuBackend<f32>>(my_second_force.clone());
+        assert_eq!(
+            forces.compute_first_matching_force::<CpuBackend<f32>>(&system),
+            Some(-100.)
+        );
+
+        // It just works!
     }
 }

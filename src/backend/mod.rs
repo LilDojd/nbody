@@ -4,7 +4,9 @@ mod device;
 
 pub use cpu::CpuBackend;
 
-pub trait Backend: Clone + Default + Sized + Send + Sync + core::fmt::Debug + 'static {
+pub trait Backend:
+    Clone + Default + Sized + Send + Sync + core::fmt::Debug + PartialEq + 'static
+{
     type Device: DeviceOps;
 
     type Vector;
