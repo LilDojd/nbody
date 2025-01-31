@@ -1,4 +1,4 @@
-/// A simple macro to implement Clone for Box<Trait>, without requiring that
+/// A simple macro to implement Clone for Box<dyn Trait>, without requiring that
 /// Trait is Clone. This works by creating a new trait (`BoxCloneTrait`) and
 /// making the first Trait inherit the `BoxCloneTrait`. `BoxCloneTrait` is
 /// automatically implemented for all `T: Clone + Trait`.
@@ -34,6 +34,19 @@ macro_rules! impl_box_clone {
 }
 pub(crate) use impl_box_clone;
 
+/// A simple macro to implement PartialEq for &dyn Trait, without requiring that
+/// Trait is PartialEq. This works by having a `DynCompare` and implementing
+/// `PartialEq` for it in a universal manner.
+///
+/// We can then have a blanket supertrait implementation via `AsDynCompare` for
+/// base traits that satisfy `static bound
+///
+/// Usage:
+///
+/// ```ignore
+/// trait Bar {};
+/// impl_ref_dyn_partialeq!(Bar);
+/// ```
 macro_rules! impl_ref_dyn_partialeq {
     ($Trait: ident) => {
         impl PartialEq<dyn $Trait> for dyn $Trait {
