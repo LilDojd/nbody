@@ -1,4 +1,4 @@
-use std::{any::TypeId, marker::PhantomData, mem::MaybeUninit};
+use std::{any::TypeId, collections::HashMap, marker::PhantomData, mem::MaybeUninit};
 
 use crate::{backend::Backend, helpers::opaque::Opaque, system::System};
 
@@ -7,9 +7,11 @@ use super::{
     ForceImpl,
 };
 
+type BackendId = TypeId;
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ForceContainer {
-    inner: Vec<Box<dyn ErasedForce>>,
+    inner: HashMap<BackendId, Vec<Box<dyn ErasedForce>>>,
 }
 
 impl ForceContainer {
@@ -21,8 +23,14 @@ impl ForceContainer {
     where
         B: Backend + 'static,
     {
-        let wrapped = ErasedForceWrapper(force, PhantomData);
-        self.inner.push(Box::new(wrapped));
+        let wrapped = Box::new(ErasedForceWrapper(force, PhantomData));
+        let id = wrapped.backend_id();
+        match self.inner.get_mut(&id) {
+            Some(backvec) => backvec.push(wrapped),
+            None => {
+                self.inner.insert(id, vec![wrapped]);
+            }
+        }
     }
 
     // A temporary function to show how we can leverage type system to assemble
@@ -31,10 +39,8 @@ impl ForceContainer {
     // Or processing each force and folding it to some unified representation
     pub fn compute_first_matching_force<B: Backend>(&self, system: &System) -> Option<B::Vector> {
         // Unwrap last since downcast is guaranteed to suceed
-        self.inner
-            .iter()
-            .find(|f| f.backend_id() == TypeId::of::<B>())
-            .map(|f| {
+        self.inner.get(&TypeId::of::<B>()).map(|f| {
+            f.first().map(|f| {
                 let mut result = MaybeUninit::<B::Vector>::uninit();
                 // SAFETY:
                 // The output pointer is valid and matches the expected B::Vector type.
@@ -47,6 +53,7 @@ impl ForceContainer {
                     result.assume_init() // ensure no leak
                 }
             })
+        })?
     }
 
     pub fn clear(&mut self) {
