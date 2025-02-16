@@ -1,11 +1,10 @@
 use std::any::TypeId;
 
-use crate::force::ForceContainer;
+use crate::forces::ForceContainer;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct System {
     potential: ForceContainer,
-    registered_backends: Vec<TypeId>,
     pub step: u64,
 }
 

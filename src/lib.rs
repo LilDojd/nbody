@@ -1,4 +1,4 @@
 pub mod backend;
-pub mod force;
+pub mod forces;
 mod helpers;
 mod system;
