@@ -1,8 +1,8 @@
-use std::marker::PhantomData;
+use std::{iter::Sum, marker::PhantomData};
 
 use super::{
-    device::{DeviceId, DeviceOps},
     Backend,
+    device::{DeviceId, DeviceOps},
 };
 
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
@@ -26,7 +26,7 @@ impl DeviceOps for CPUDevice {
 
 impl<V> Backend for CpuBackend<V>
 where
-    V: Default + Sync + Send + std::fmt::Debug + Clone + PartialEq + 'static,
+    V: Sum + Default + Sync + Send + std::fmt::Debug + Clone + PartialEq + 'static,
 {
     type Device = CPUDevice;
     type Vector = V;

@@ -11,23 +11,28 @@
 /// impl_box_clone!(Foo, BoxCloneFoo, box_clone_foo);
 /// ```
 macro_rules! impl_box_clone {
-    ($Trait: ident, $BoxClone: ident, $box_clone: ident) => {
+    ($Trait:ident $(<$($gen:tt),+>)?) => {
+        paste::paste! {
         #[doc(hidden)]
         /// This is an internal implementation detail for cloning `Box<Trait>`
-        pub trait $BoxClone {
-            /// Get a cloned of self as a boxed trait.
-            fn $box_clone(&self) -> Box<dyn $Trait>;
-        }
+        pub trait [<BoxClone$Trait>] $(<$($gen),+>)? {
+            /// Get a clone of self as a boxed trait.
+            fn box_clone(&self) -> Box<dyn $Trait $(<$($gen),+>)? >;
+        }}
 
-        impl<T: Clone + $Trait + 'static> $BoxClone for T {
-            fn $box_clone(&self) -> Box<dyn $Trait> {
+        paste::paste! {
+
+        #[doc(hidden)]
+        /// This is an internal implementation detail for cloning `Box<Trait>`
+        impl<$($($gen), +,)? T: Clone + $Trait $(<$($gen),+>)? + 'static> [<BoxClone$Trait>] $(<$($gen),+>)? for T {
+            fn box_clone(&self) -> Box<dyn $Trait $(<$($gen),+>)? > {
                 Box::new(self.clone())
             }
-        }
+        }}
 
-        impl Clone for Box<dyn $Trait> {
-            fn clone(&self) -> Box<dyn $Trait> {
-                self.$box_clone()
+        impl $(<$($gen),+>)? Clone for Box<dyn $Trait $(<$($gen),+>)? > {
+            fn clone(&self) -> Box<dyn $Trait $(<$($gen),+>)? > {
+                self.box_clone()
             }
         }
     };
@@ -48,9 +53,10 @@ pub(crate) use impl_box_clone;
 /// impl_ref_dyn_partialeq!(Bar);
 /// ```
 macro_rules! impl_ref_dyn_partialeq {
-    ($Trait: ident) => {
-        impl PartialEq<dyn $Trait> for dyn $Trait {
-            fn eq(&self, other: &dyn $Trait) -> bool {
+    ($Trait: ident $(<$($gen:tt),+>)?) => {
+        impl $(<$($gen),+>)?  PartialEq<dyn $Trait $(<$($gen),+>)?> for dyn $Trait $(<$($gen),+>)?
+        $(where $($gen),+: 'static)? {
+            fn eq(&self, other: &dyn $Trait $(<$($gen),+>)?) -> bool {
                 self.as_dyn_compare() == other.as_dyn_compare()
             }
         }

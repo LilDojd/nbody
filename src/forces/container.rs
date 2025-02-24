@@ -1,25 +1,33 @@
-use std::{any::TypeId, collections::HashMap, marker::PhantomData, mem::MaybeUninit};
+use std::{any::TypeId, collections::HashMap, marker::PhantomData};
 
 use crate::{backend::Backend, helpers::opaque::Opaque, system::System};
 
 use super::{
-    erasure::{private::ErasedForce, ErasedForceWrapper},
     ForceImpl,
+    erasure::{ErasedForceWrapper, private::ErasedForce},
 };
 
 type BackendId = TypeId;
 
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct ForceContainer {
-    inner: HashMap<BackendId, Vec<Box<dyn ErasedForce>>>,
+pub struct ForceContainer<S>
+where
+    dyn ErasedForce<S>: PartialEq,
+{
+    inner: HashMap<BackendId, Vec<Box<dyn ErasedForce<S>>>>,
 }
 
-impl ForceContainer {
+impl<S> ForceContainer<S>
+where
+    S: Default + 'static + std::fmt::Debug + Clone + PartialEq,
+{
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn add_force<B>(&mut self, force: impl ForceImpl<B>)
+    fn register_backend<B>(&mut self) {}
+
+    pub fn add_force<B>(&mut self, force: impl ForceImpl<B, S>)
     where
         B: Backend + 'static,
     {
@@ -28,6 +36,7 @@ impl ForceContainer {
         match self.inner.get_mut(&id) {
             Some(backvec) => backvec.push(wrapped),
             None => {
+                self.register_backend::<B>();
                 self.inner.insert(id, vec![wrapped]);
             }
         }
@@ -37,23 +46,33 @@ impl ForceContainer {
     // forces from different backends.
     // One can imagine doing fold and map (reduce) here for a specific `B: Backend`
     // Or processing each force and folding it to some unified representation
-    pub fn compute_first_matching_force<B: Backend>(&self, system: &System) -> Option<B::Vector> {
-        // Unwrap last since downcast is guaranteed to suceed
-        self.inner.get(&TypeId::of::<B>()).map(|f| {
-            f.first().map(|f| {
-                let mut result = MaybeUninit::<B::Vector>::uninit();
+    fn compute_matching_forces<B: Backend>(&self, storage: &S) -> Option<B::Vector>
+    where
+        B::Vector: Default + std::ops::AddAssign,
+    {
+        self.inner.get(&TypeId::of::<B>()).map(|forces| {
+            forces.iter().fold(B::Vector::default(), |mut acc, force| {
+                let mut result = std::mem::MaybeUninit::<B::Vector>::uninit();
                 // SAFETY:
-                // The output pointer is valid and matches the expected B::Vector type.
-                // Pointer is aligned
-                //
-                // We use a c_style opaque type (wrapper around an empty array) to model void*
-                // c_void would also probably do, but I am not sure
+                // - The output pointer is valid and aligned.
+                // - `compute_force_into` writes a valid B::Vector into the pointer.
                 unsafe {
-                    f.compute_force_into(system, result.as_mut_ptr() as *mut Opaque);
-                    result.assume_init() // ensure no leak
+                    force.compute_force_into(storage, result.as_mut_ptr() as *mut Opaque);
+                    acc += result.assume_init();
                 }
+                acc
             })
-        })?
+        })
+    }
+
+    pub fn compute_forces<V>(&self, storage: &S) -> V {
+        self.inner.iter().map(|(tid, vf)| {
+            vf.iter().map(|f| {
+                let force = f.compute_force(storage);
+                todo!()
+            })
+        });
+        todo!()
     }
 
     pub fn clear(&mut self) {
@@ -69,20 +88,20 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct MyForce;
 
-    impl ForceImpl<CpuBackend<f64>> for MyForce {
-        fn force(&self, system: &System, params: ()) -> f64 {
+    impl<S> ForceImpl<CpuBackend<f64>, S> for MyForce {
+        fn force(&self, storage: &S) -> f64 {
             1.5
         }
     }
 
-    impl ForceImpl<CpuBackend<f32>> for MySecondForce {
-        fn force(&self, system: &System, params: ()) -> f32 {
+    impl<S> ForceImpl<CpuBackend<f32>, S> for MySecondForce {
+        fn force(&self, storage: &S) -> f32 {
             -100.
         }
     }
 
-    impl ForceImpl<CpuBackend<i8>> for MySecondForce {
-        fn force(&self, system: &System, params: ()) -> i8 {
+    impl<S> ForceImpl<CpuBackend<i8>, S> for MySecondForce {
+        fn force(&self, storage: &S) -> i8 {
             -1
         }
     }
@@ -96,18 +115,18 @@ mod tests {
         let my_second_force = MySecondForce;
 
         let mut forces = ForceContainer::new();
-        let system = System::new();
+        let system: System<()> = System::new();
 
         // We can add first force like this, since only one backend impl is present
         forces.add_force(my_cpu_force);
         // We then can query this impl and know the returning type
         assert_eq!(
-            forces.compute_first_matching_force::<CpuBackend<f64>>(&system),
+            forces.compute_matching_forces::<CpuBackend<f64>>(&system),
             Some(1.5f64)
         );
         // Unsuccessful queries will return None
         assert_eq!(
-            forces.compute_first_matching_force::<CpuBackend<String>>(&system),
+            forces.compute_matching_forces::<CpuBackend<i64>>(&system),
             None
         );
 
@@ -118,18 +137,18 @@ mod tests {
         forces.add_force::<CpuBackend<i8>>(my_second_force.clone());
 
         assert_eq!(
-            forces.compute_first_matching_force::<CpuBackend<i8>>(&system),
+            forces.compute_matching_forces::<CpuBackend<i8>>(&system),
             Some(-1)
         );
 
         // We can add same force with the different backend also
         assert_eq!(
-            forces.compute_first_matching_force::<CpuBackend<f32>>(&system),
+            forces.compute_matching_forces::<CpuBackend<f32>>(&system),
             None
         );
         forces.add_force::<CpuBackend<f32>>(my_second_force.clone());
         assert_eq!(
-            forces.compute_first_matching_force::<CpuBackend<f32>>(&system),
+            forces.compute_matching_forces::<CpuBackend<f32>>(&system),
             Some(-100.)
         );
 

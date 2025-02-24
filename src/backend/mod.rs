@@ -1,3 +1,5 @@
+use std::iter::Sum;
+
 use device::DeviceOps;
 mod cpu;
 mod device;
@@ -9,7 +11,7 @@ pub trait Backend:
 {
     type Device: DeviceOps;
 
-    type Vector;
+    type Vector: Sum;
 
     fn name() -> String;
 

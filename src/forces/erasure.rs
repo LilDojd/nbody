@@ -5,28 +5,30 @@ use std::{
 
 use crate::{
     backend::Backend,
-    helpers::{opaque::Opaque, DynCompare},
-    system::System,
+    helpers::{DynCompare, opaque::Opaque},
 };
 
 use super::ForceImpl;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ErasedForceWrapper<F, B>(pub F, pub PhantomData<B>);
+pub(super) struct ErasedForceWrapper<F, B, S>(pub F, pub PhantomData<(B, S)>);
 
-impl<F, B> private::ErasedForce for ErasedForceWrapper<F, B>
+impl<F, B, S> private::ErasedForce<S> for ErasedForceWrapper<F, B, S>
 where
-    F: ForceImpl<B> + std::fmt::Debug + Clone + DynCompare + 'static,
+    F: ForceImpl<B, S> + std::fmt::Debug + Clone + DynCompare + 'static,
     B: Backend + 'static,
+    S: std::fmt::Debug + Clone + PartialEq + 'static,
 {
-    fn compute_force(&self, system: &System) -> Box<dyn Any> {
-        Box::new(ForceImpl::force(&self.0, system, ()))
+    fn compute_force(&self, storage: &S) -> Box<dyn Any> {
+        Box::new(ForceImpl::force(&self.0, storage))
     }
 
-    unsafe fn compute_force_into(&self, system: &System, output: *mut Opaque) {
-        let vector = self.0.force(system, ());
-        let output = output as *mut B::Vector;
-        *output = vector;
+    unsafe fn compute_force_into(&self, storage: &S, output: *mut Opaque) {
+        unsafe {
+            let vector = self.0.force(storage);
+            let output = output as *mut B::Vector;
+            *output = vector;
+        }
     }
 
     fn backend_id(&self) -> TypeId {
@@ -37,21 +39,18 @@ where
 pub(super) mod private {
     use std::any::{Any, TypeId};
 
-    use crate::{
-        helpers::{
-            macros::{impl_box_clone, impl_ref_dyn_partialeq},
-            DynCompare,
-        },
-        system::System,
+    use crate::helpers::{
+        DynCompare,
+        macros::{impl_box_clone, impl_ref_dyn_partialeq},
     };
 
     use super::Opaque;
 
-    pub(crate) trait ErasedForce:
-        std::fmt::Debug + DynCompare + BoxCloneErasedForce
+    pub(crate) trait ErasedForce<S>:
+        std::fmt::Debug + DynCompare + BoxCloneErasedForce<S>
     {
         /// Compute force for the backend this force is implemented for
-        fn compute_force(&self, system: &System) -> Box<dyn Any>;
+        fn compute_force(&self, storage: &S) -> Box<dyn Any>;
         /// Write result of calling compute_force into a pre-allocated memory
         ///
         /// Safety:
@@ -60,11 +59,11 @@ pub(super) mod private {
         ///    the expected output B::Vector type
         /// 3. Memory at `output` must be initialized after returning
         /// 4. Caller must ensure that the data at `output` will get dropped
-        unsafe fn compute_force_into(&self, system: &System, output: *mut Opaque);
+        unsafe fn compute_force_into(&self, storage: &S, output: *mut Opaque);
         /// Return the TypeId of the backend this force targets
         fn backend_id(&self) -> TypeId;
     }
 
-    impl_box_clone!(ErasedForce, BoxCloneErasedForce, box_clone);
-    impl_ref_dyn_partialeq!(ErasedForce);
+    impl_box_clone!(ErasedForce<S>);
+    impl_ref_dyn_partialeq!(ErasedForce<S>);
 }
